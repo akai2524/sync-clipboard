@@ -1,0 +1,13 @@
+.tools/
+research/private/
+research/*.json
+dist/
+bin/
+obj/
+universal/build/
+*.user
+*.log
+*.exe
+*.dll
+*.zip
+*.7z
