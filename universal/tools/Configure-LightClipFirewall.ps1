@@ -4,6 +4,7 @@
     [switch]$InspectOnly,
     [switch]$SelfTest,
     [switch]$NoPause,
+    [switch]$Unattended,
     [switch]$LibraryOnly
 )
 
@@ -120,6 +121,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
         $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Mode ' + $Mode
         if ($InstallPath) { $arguments += ' -InstallPath "' + $InstallPath + '"' }
         if ($NoPause) { $arguments += ' -NoPause' }
+        if ($Unattended) { $arguments += ' -Unattended' }
         $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -PassThru -Wait
         exit $child.ExitCode
     } catch { Write-Host '未获得管理员授权，未更改防火墙。'; if (-not $NoPause) { Read-Host '按回车关闭' | Out-Null }; exit 1 }
@@ -165,7 +167,7 @@ try {
         $aliases = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { -not [String]::IsNullOrWhiteSpace($_.Name) } | ForEach-Object { [Management.Automation.WildcardPattern]::Escape($_.Name) } | Select-Object -Unique)
         if ($aliases.Count -eq 0) { throw '未找到物理网络适配器；原有规则未改变。' }
         $message = '自动模式无需输入手机 IP，也无需额外常驻进程。Windows 本地 IPv4 子网内的设备可以通过此电脑现有的物理网卡访问三个小米互联程序；范围比只允许手机 IP 更大，私人和公共网络均生效。是否继续？'
-        if ([Windows.Forms.MessageBox]::Show($message, '轻剪自动网络设置', 'OKCancel', 'Warning') -ne [Windows.Forms.DialogResult]::OK) { throw '已取消，原有规则未改变。' }
+        if (-not $Unattended -and [Windows.Forms.MessageBox]::Show($message, '轻剪自动网络设置', 'OKCancel', 'Warning') -ne [Windows.Forms.DialogResult]::OK) { throw '已取消，原有规则未改变。' }
         $create = { param($name,$ruleGroup,$program,$protocol,$address)
             New-NetFirewallRule -Name $name -Group $ruleGroup -DisplayName '轻剪通用版：本地网络' -Description 'LightClipUniversal local subnet rule' -Direction Inbound -Action Allow -Enabled True -Profile Public,Private -Program $program -Protocol $protocol -RemoteAddress $address -InterfaceAlias $aliases | Out-Null
         }

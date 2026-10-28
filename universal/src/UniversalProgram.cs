@@ -13,7 +13,7 @@ using MiSmartShareClrWrapper.CommonSpace;
 // Experimental Windows universal build. Kept independent from the installed Xiaomi-PC build.
 internal static class Program
 {
-    const string Title = "轻剪同步通用测试版";
+    const string Title = "轻剪同步";
     const string MutexName = "Local\\LightClipUniversal.Experimental.Instance";
     const string ShowName = "Local\\LightClipUniversal.Experimental.Show";
     const string StopName = "Local\\LightClipUniversal.Experimental.Stop";
@@ -24,11 +24,15 @@ internal static class Program
     static EventWaitHandle show, stop;
     static IntPtr window;
     static Assembly wrapper;
-    static object main, accountCallbacks, serviceCallbacks, deviceCallbacks;
+    static object main, accountCallbacks, serviceCallbacks, deviceCallbacks, clipboardCallbacks;
     static readonly object deviceLock = new object();
+    static readonly object statusLock = new object();
+    static readonly AccountState account = new AccountState();
+    static readonly DeviceSelector selector = new DeviceSelector();
+    static readonly SyncEvidence syncEvidence = new SyncEvidence();
     static List<PhoneDevice> phones = new List<PhoneDevice>();
     static Type mainType;
-    static bool initialized, stopping;
+    static bool initialized, stopping, choosingPhone, serviceDisconnected, serviceRepairNeeded;
     static string state = "正在启动";
 
     [STAThread]
@@ -40,7 +44,7 @@ internal static class Program
             // Do not compete with the existing Xiaomi-PC build or manager.
             string miRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "MI");
             if (Process.GetProcessesByName("SyncClipboardLite").Length != 0 || Directory.Exists(Path.Combine(miRoot, "XiaomiPCManager")) || Directory.Exists(Path.Combine(miRoot, "PcContinuity"))) {
-                Native.MessageBox(IntPtr.Zero, "通用测试版请在非小米测试电脑上运行。此电脑已有小米电脑管家或现有轻剪，为避免影响它们，测试版已退出。", Title, 0x40);
+                Native.MessageBox(IntPtr.Zero, "此版本适用于非小米电脑。这台电脑已有小米电脑管家或现有轻剪，为避免影响它们，程序已退出。", Title, 0x40);
                 return 2;
             }
             bool created;
@@ -61,7 +65,7 @@ internal static class Program
             Shutdown(); return result < 0 ? 1 : 0;
         } catch (Exception error) {
             Log("启动异常：" + error.GetType().Name + ": " + error.Message);
-            Native.MessageBox(IntPtr.Zero, "通用测试版启动失败：" + error.Message + "\n\n请查看安装目录 data\\logs\\status.log。", Title, 0x10);
+            Native.MessageBox(IntPtr.Zero, "轻剪同步启动失败：" + error.Message + "\n\n请查看安装目录 data\\logs\\status.log。", Title, 0x10);
             return 1;
         }
     }
@@ -118,6 +122,8 @@ internal static class Program
         ServiceCheckerCLrWrapper.GetInstance().AddUI((IServiceCheckerWrapperUI)serviceCallbacks);
         deviceCallbacks = new DeviceCallbacks();
         ConnectionClrWrapper.GetInstance().AddUI((ConnectionUIWrapper)deviceCallbacks);
+        clipboardCallbacks = new ClipboardCallbacks();
+        ClrClipboardSyncWrapper.GetInstance().AddUI((ClrClipboardSyncWrapperUI)clipboardCallbacks);
     }
     static void RefreshDevices()
     {
@@ -127,6 +133,7 @@ internal static class Program
     internal static void UpdateDevices(IEnumerable<DeviceInfoWrapper> devices)
     {
         List<PhoneDevice> found = new List<PhoneDevice>();
+        HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
         int total = 0, phoneTypes = 0, phoneMissingId = 0;
         Dictionary<int, int> types = new Dictionary<int, int>();
         if (devices != null) foreach (DeviceInfoWrapper device in devices) {
@@ -136,10 +143,14 @@ internal static class Program
             if (device.device_type != CDeviceTypeWrapper.kPhone) continue;
             phoneTypes++;
             if (String.IsNullOrEmpty(device.idhash)) { phoneMissingId++; continue; }
+            if (!seen.Add(device.idhash)) continue;
             string name = !String.IsNullOrWhiteSpace(device.name) ? device.name : !String.IsNullOrWhiteSpace(device.market_name) ? device.market_name : "小米手机";
             found.Add(new PhoneDevice { Id = device.idhash, Name = name.Replace("&", "&&"), Online = device.is_online });
         }
-        lock (deviceLock) phones = found;
+        lock (statusLock) {
+            if (!account.Snapshot().LoggedIn) found.Clear();
+            lock (deviceLock) phones = found;
+        }
         Log("设备列表已更新，手机数量：" + found.Count);
         List<string> typeCounts = new List<string>();
         foreach (KeyValuePair<int, int> item in types) typeCounts.Add(item.Key + ":" + item.Value);
@@ -156,9 +167,32 @@ internal static class Program
     {
         state = value; Log(value); if (window != IntPtr.Zero) Native.PostMessage(window, 0x8002, new IntPtr(success ? 1 : 0), IntPtr.Zero);
     }
+    internal static void AccountLoginSucceeded(string name)
+    {
+        lock (statusLock) { if (!account.Snapshot().LoggedIn) syncEvidence.Reset(); account.LoginSucceeded(name); }
+        AccountEvent("小米账号登录成功；同步待实测", true);
+    }
+    internal static void AccountSignedOut(string value)
+    {
+        lock (statusLock) { account.SignedOut(); syncEvidence.Reset(); lock (deviceLock) phones.Clear(); }
+        AccountEvent(value, false);
+    }
     internal static void ServiceEvent(string value, bool repair)
     {
+        lock (statusLock) { serviceRepairNeeded = repair; syncEvidence.Reset(); }
         state = value; Log(value); if (window != IntPtr.Zero) Native.PostMessage(window, repair ? 0x8003u : 0x8002u, IntPtr.Zero, IntPtr.Zero);
+    }
+    internal static void ServiceConnectionChanged(bool connected)
+    {
+        lock (statusLock) { serviceDisconnected = !connected; if (!connected) syncEvidence.Reset(); }
+        if (!connected) { state = "小米互联服务不可用"; Log(state); }
+        if (window != IntPtr.Zero) Native.PostMessage(window, 0x8002, IntPtr.Zero, IntPtr.Zero);
+    }
+    internal static void ClipboardProgress(ulong total, ulong transferred)
+    {
+        bool changed;
+        lock (statusLock) changed = account.Snapshot().LoggedIn && !serviceDisconnected && !serviceRepairNeeded && syncEvidence.RecordProgress(total, transferred);
+        if (changed && window != IntPtr.Zero) Native.PostMessage(window, 0x8005, IntPtr.Zero, IntPtr.Zero);
     }
     static IntPtr WindowProc(IntPtr h, uint msg, IntPtr w, IntPtr l)
     {
@@ -168,10 +202,15 @@ internal static class Program
             if (msg == 0x8001) { int action = (int)l.ToInt64(); if (action == 0x202) TrayFlyout.Toggle(); else if (action == 0x205) ShowMenu(); return IntPtr.Zero; }
             if (msg == 0x8002) {
                 Tray(1); TrayFlyout.Changed();
-                if (w != IntPtr.Zero) { try { ClrClipboardSyncWrapper.GetInstance().HandleSetClipBoardSyncSwitch(true); } catch (Exception e) { Log("启用剪贴板失败：" + e.GetType().Name); } RefreshDevices(); }
+                if (w != IntPtr.Zero && account.Snapshot().LoggedIn) { try { ClrClipboardSyncWrapper.GetInstance().HandleSetClipBoardSyncSwitch(true); } catch (Exception e) { Log("启用剪贴板失败：" + e.GetType().Name); } RefreshDevices(); }
+                else if (!account.Snapshot().LoggedIn) { selector.Reset(); lock (deviceLock) phones.Clear(); TrayFlyout.Changed(); }
                 return IntPtr.Zero;
             }
-            if (msg == 0x8004) { TrayFlyout.Changed(); return IntPtr.Zero; }
+            if (msg == 0x8004) { TrayFlyout.Changed(); EvaluateDevices(); return IntPtr.Zero; }
+            if (msg == 0x8005) {
+                if (account.Snapshot().LoggedIn && syncEvidence.Complete) { state = "已检测到一次传输完成"; Log(state); Tray(1); TrayFlyout.Changed(); }
+                return IntPtr.Zero;
+            }
             if (msg == 0x8003) {
                 Tray(1); TrayFlyout.Changed();
                 if (Native.MessageBox(h, "官方互联组件报告后台服务需要修复。是否打开小米自带的服务修复流程？\n\n可能出现 Windows 管理员授权。", Title, 0x24) == 6)
@@ -181,7 +220,7 @@ internal static class Program
             if (msg == Native.RegisterWindowMessage("TaskbarCreated")) { Tray(0); return IntPtr.Zero; }
         } catch (Exception error) {
             Log("运行异常：" + error.GetType().Name + ": " + error.Message);
-            Native.MessageBox(h, "通用测试版遇到错误：" + error.Message, Title, 0x10);
+            Native.MessageBox(h, "轻剪同步遇到错误：" + error.Message, Title, 0x10);
             Native.PostQuitMessage(1);
         }
         return Native.DefWindowProc(h, msg, w, l);
@@ -195,7 +234,9 @@ internal static class Program
     static FlyoutState CurrentState()
     {
         string label; lock (deviceLock) label = phones.Count == 0 ? "未发现手机" : phones.Count == 1 ? phones[0].Name.Replace("&&", "&") : "发现 " + phones.Count + " 台手机";
-        using (Process p = Process.GetCurrentProcess()) return new FlyoutState { Ready = initialized, Startup = StartupEnabled(), PhoneName = label, Memory = p.WorkingSet64 / 1048576.0 };
+        AccountSnapshot identity; bool verified, serviceProblem;
+        lock (statusLock) { identity = account.Snapshot(); verified = identity.LoggedIn && syncEvidence.Complete; serviceProblem = serviceDisconnected || serviceRepairNeeded; }
+        using (Process p = Process.GetCurrentProcess()) return new FlyoutState { Ready = initialized, Startup = StartupEnabled(), PhoneName = label, AccountLoggedIn = identity.LoggedIn, AccountName = identity.DisplayName, SyncVerified = verified, ServiceProblem = serviceProblem, Memory = p.WorkingSet64 / 1048576.0 };
     }
     static bool StartupEnabled() { using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) return k != null && k.GetValue("LightClipUniversal") != null; }
     static void ToggleStartup()
@@ -231,13 +272,41 @@ internal static class Program
             Native.POINT p; Native.GetCursorPos(out p); Native.SetForegroundWindow(window);
             uint choice = Native.TrackPopupMenu(menu, 0x102, p.x, p.y, 0, window, IntPtr.Zero);
             if (choice > 0 && choice <= snapshot.Length) {
-                string id = snapshot[choice - 1].Id; bool present = false;
-                lock (deviceLock) foreach (PhoneDevice phone in phones) if (phone.Id == id) { present = true; break; }
-                if (!present) { Native.MessageBox(window, "设备列表已变化，请重新选择手机。", Title, 0x40); return; }
-                ConnectionClrWrapper.GetInstance().HandleUpdateSelectDevice(id);
-                state = "已请求选择手机，剪贴板待实测"; Log(state); Tray(1);
+                string id = snapshot[choice - 1].Id;
+                if (SelectPhone(id)) selector.UserSelected(id);
             }
         } finally { Native.DestroyMenu(menu); }
+    }
+    static bool SelectPhone(string id)
+    {
+        bool present = false;
+        lock (deviceLock) foreach (PhoneDevice phone in phones) if (phone.Id == id) { present = true; break; }
+        if (!present) { Native.MessageBox(window, "设备列表已变化，请重新选择手机。", Title, 0x40); return false; }
+        try {
+            lock (statusLock) syncEvidence.Reset();
+            ConnectionClrWrapper.GetInstance().HandleUpdateSelectDevice(id);
+            state = "已请求选择手机，剪贴板待实测"; Log(state); Tray(1);
+            return true;
+        } catch (Exception error) {
+            state = "选择手机失败"; Log("选择手机失败：" + error.GetType().Name); Tray(1);
+            Native.MessageBox(window, "暂时无法选择手机，请稍后通过托盘菜单重试。", Title, 0x30);
+            return false;
+        }
+    }
+    static void EvaluateDevices()
+    {
+        if (!initialized || choosingPhone) return;
+        PhoneDevice[] snapshot; lock (deviceLock) snapshot = phones.ToArray();
+        List<string> ids = new List<string>(); foreach (PhoneDevice phone in snapshot) ids.Add(phone.Id);
+        DeviceDecision decision = selector.Evaluate(ids, account.Snapshot().LoggedIn);
+        if (decision.Action == DeviceAction.SelectOne) SelectPhone(decision.Id);
+        else if (decision.Action == DeviceAction.AskUser) {
+            choosingPhone = true;
+            try {
+                if (Native.MessageBox(window, "发现多台手机，是否现在选择要用于互联的手机？稍后也可以在托盘菜单中选择。", Title, 0x24) == 6) ChoosePhone();
+            } finally { choosingPhone = false; }
+            if (window != IntPtr.Zero) Native.PostMessage(window, 0x8004, IntPtr.Zero, IntPtr.Zero);
+        }
     }
     static void Shutdown()
     {
@@ -261,16 +330,22 @@ internal sealed class DeviceCallbacks : ConnectionUIWrapper
 
 internal sealed class AccountCallbacks : MiAccountUICLRWrapper
 {
-    public void OnLoginExpose() { Program.AccountEvent("请登录小米账号", false); }
-    public void OnMiAccountToBeConfirmed(string id, string name, string avatar) { Program.AccountEvent("等待账号确认", false); }
+    public void OnLoginExpose() { Program.AccountSignedOut("请登录小米账号"); }
+    public void OnMiAccountToBeConfirmed(string id, string name, string avatar) { Program.AccountSignedOut("等待账号确认"); }
     public void OnShowDisconnectWarning() { Program.AccountEvent("账号连接需要确认", false); }
-    public void OnLoginSuccess(string id, string name, string avatar) { Program.AccountEvent("小米账号登录成功；同步待实测", true); }
-    public void OnLogout() { Program.AccountEvent("账号已退出", false); }
-    public void OnLoginFailed() { Program.AccountEvent("小米账号登录失败", false); }
+    public void OnLoginSuccess(string id, string name, string avatar) { Program.AccountLoginSucceeded(name); }
+    public void OnLogout() { Program.AccountSignedOut("账号已退出"); }
+    public void OnLoginFailed() { Program.AccountSignedOut("小米账号登录失败"); }
+}
+internal sealed class ClipboardCallbacks : ClrClipboardSyncWrapperUI
+{
+    public void OnTransferProgress(int sequenceId, ulong total, ulong transferred, bool textShow) { Program.ClipboardProgress(total, transferred); }
+    public void OnPopUpClipboardSyncDialog(int sequenceId, PopUpDialogTypeWrapper type, string deviceName, ClipboardSyncDataSourceWrapper source, bool textShow) { }
+    public void OnCloseClipboardSyncDialog(int sequenceId, PopUpDialogTypeWrapper type) { }
 }
 internal sealed class ServiceCallbacks : IServiceCheckerWrapperUI
 {
-    public void OnMiServiceStateChange(bool connected) { if (!connected) Program.ServiceEvent("小米互联服务不可用", false); }
+    public void OnMiServiceStateChange(bool connected) { Program.ServiceConnectionChanged(connected); }
     public void OnShowMiServiceError() { Program.ServiceEvent("小米互联服务需要修复", true); }
     public void OnShowSvrError(ServiceTypeWrapper service) { Program.ServiceEvent("小米后台服务需要修复", true); }
     public void OnRepairServiceSuccess(ServiceTypeWrapper service) { Program.ServiceEvent("服务修复已返回；同步待实测", false); }

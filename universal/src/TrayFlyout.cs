@@ -7,8 +7,8 @@ using Microsoft.Win32;
 // Native, on-demand UI. No browser, Forms, drawing framework or idle animation.
 internal sealed class FlyoutState
 {
-    internal bool Ready, Startup, Preview;
-    internal string Phase, PhoneName;
+    internal bool Ready, Startup, Preview, AccountLoggedIn, SyncVerified, ServiceProblem;
+    internal string Phase, PhoneName, AccountName;
     internal int Changes;
     internal DateTime LastChange;
     internal double Memory;
@@ -59,7 +59,11 @@ internal static class TrayFlyout
         return UI.IsDialogMessage(hwnd, ref message);
     }
     internal static void Toggle() { if (visible) Hide(); else Show(); }
-    internal static void Changed() { if (visible) { state = read(); UI.InvalidateRect(hwnd, IntPtr.Zero, false); } }
+    internal static void Changed() { if (visible) { state = read(); UpdateAccountControl(); UI.InvalidateRect(hwnd, IntPtr.Zero, false); } }
+    static void UpdateAccountControl()
+    {
+        if (buttons[2] != IntPtr.Zero) UI.ShowWindow(buttons[2], state.AccountLoggedIn ? 0 : 5);
+    }
     static void Theme()
     {
         using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
@@ -75,7 +79,7 @@ internal static class TrayFlyout
         cls.hInstance = Native.GetModuleHandle(null); cls.lpszClassName = "SyncClipboardLite.Flyout";
         cls.hCursor = UI.LoadCursor(IntPtr.Zero, new IntPtr(32512)); cls.hIcon = SmallIcon;
         if (Native.RegisterClass(ref cls) == 0) throw new System.ComponentModel.Win32Exception();
-        hwnd = Native.CreateWindowEx(0x00080000 | 0x00010000 | (preview ? 0x40000u : 0x80u), cls.lpszClassName, "轻剪通用版 · 快捷面板", 0x80000000 | 0x02000000,
+        hwnd = Native.CreateWindowEx(0x00080000 | 0x00010000 | (preview ? 0x40000u : 0x80u), cls.lpszClassName, "轻剪同步 · 快捷面板", 0x80000000 | 0x02000000,
             0, 0, Width, Height, owner, IntPtr.Zero, cls.hInstance, IntPtr.Zero);
         if (hwnd == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
         icon = UI.LoadImage(IntPtr.Zero, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "lightclip.ico"), 1, 64, 64, 0x10);
@@ -103,7 +107,7 @@ internal static class TrayFlyout
         UI.MonitorInfo info = new UI.MonitorInfo(); info.cbSize = Marshal.SizeOf(typeof(UI.MonitorInfo));
         IntPtr monitor = UI.MonitorFromRect(ref anchor, 2); UI.GetMonitorInfo(monitor, ref info);
         uint dx, dy; scale = UI.GetDpiForMonitor(monitor, 0, out dx, out dy) == 0 ? dx / 96.0 : 1;
-        Layout(); Theme();
+        Layout(); Theme(); UpdateAccountControl();
         targetX = Math.Max(info.work.left + S(12), Math.Min(anchor.right - S(Width), info.work.right - S(12 + Width)));
         targetY = Math.Max(info.work.top + S(12), Math.Min(anchor.top - S(Height + 12), info.work.bottom - S(Height + 12)));
         bool enabled; reduceMotion = !UI.SystemParametersInfo(0x1042, 0, out enabled, 0) || !enabled;
@@ -175,27 +179,31 @@ internal static class TrayFlyout
         IntPtr buffer = UI.CreateCompatibleDC(dc), bitmap = UI.CreateCompatibleBitmap(dc, S(Width), S(Height));
         IntPtr previous = UI.SelectObject(buffer, bitmap);
         try {
-            Box(buffer, 0, 0, Width, Height, 0, Bg, Bg);
-            if (icon != IntPtr.Zero) UI.DrawIconEx(buffer, S(24), S(24), icon, S(42), S(42), 0, IntPtr.Zero, 3);
-            Text(buffer, "轻剪", 78, 19, 220, 33, 0, Ink, false);
-            Text(buffer, "文字与图片 · 双向复制", 79, 53, 225, 20, 2, Muted, false);
-            Box(buffer, 24, 94, 328, 170, 16, Surface, Border);
-            // A static device diagram; it deliberately does not imply device presence.
-            Box(buffer, 52, 119, 87, 55, 6, Tint, Blue);
-            Line(buffer, 95, 175, 95, 183, Blue, 2); Line(buffer, 79, 184, 112, 184, Blue, 2);
-            Box(buffer, 253, 110, 40, 77, 8, Tint, Blue); Line(buffer, 266, 118, 280, 118, Blue, 2);
-            Line(buffer, 267, 179, 279, 179, Blue, 2);
-            Line(buffer, 160, 138, 225, 138, Blue, 2); Line(buffer, 218, 132, 225, 138, Blue, 2); Line(buffer, 218, 144, 225, 138, Blue, 2);
-            Line(buffer, 225, 157, 160, 157, Blue, 2); Line(buffer, 167, 151, 160, 157, Blue, 2); Line(buffer, 167, 163, 160, 157, Blue, 2);
-            Text(buffer, "这台电脑", 47, 192, 96, 21, 2, Muted, true);
-            Text(buffer, state.PhoneName ?? "小米手机", 206, 192, 134, 21, 2, Muted, true);
-            Box(buffer, 110, 225, 156, 25, 12, Tint, Tint);
-            Text(buffer, preview ? "界面预览" : state.Ready ? "服务已启动 · 待验证" : "正在启动", 110, 225, 156, 25, 2, Blue, true);
-            Text(buffer, "本进程 " + state.Memory.ToString("F1") + " MB", 26, 277, 200, 22, 1, Ink, false);
-            Text(buffer, "不含小米后台服务", 214, 278, 137, 21, 2, Muted, false);
-            Line(buffer, 24, 378, 352, 378, Border, 1);
+            DrawPanel(buffer);
             UI.BitBlt(dc, 0, 0, S(Width), S(Height), buffer, 0, 0, 0xCC0020);
         } finally { UI.SelectObject(buffer, previous); UI.DeleteObject(bitmap); UI.DeleteDC(buffer); UI.EndPaint(h, ref ps); }
+    }
+    static void DrawPanel(IntPtr buffer)
+    {
+        Box(buffer, 0, 0, Width, Height, 0, Bg, Bg);
+        if (icon != IntPtr.Zero) UI.DrawIconEx(buffer, S(24), S(24), icon, S(42), S(42), 0, IntPtr.Zero, 3);
+        Text(buffer, "轻剪", 78, 19, 220, 33, 0, Ink, false);
+        Text(buffer, "文字与图片 · 双向复制", 79, 53, 225, 20, 2, Muted, false);
+        Box(buffer, 24, 94, 328, 170, 16, Surface, Border);
+        // A static device diagram; it deliberately does not imply device presence.
+        Box(buffer, 52, 119, 87, 55, 6, Tint, Blue);
+        Line(buffer, 95, 175, 95, 183, Blue, 2); Line(buffer, 79, 184, 112, 184, Blue, 2);
+        Box(buffer, 253, 110, 40, 77, 8, Tint, Blue); Line(buffer, 266, 118, 280, 118, Blue, 2);
+        Line(buffer, 267, 179, 279, 179, Blue, 2);
+        Line(buffer, 160, 138, 225, 138, Blue, 2); Line(buffer, 218, 132, 225, 138, Blue, 2); Line(buffer, 218, 144, 225, 138, Blue, 2);
+        Line(buffer, 225, 157, 160, 157, Blue, 2); Line(buffer, 167, 151, 160, 157, Blue, 2); Line(buffer, 167, 163, 160, 157, Blue, 2);
+        Text(buffer, "这台电脑", 47, 192, 96, 21, 2, Muted, true);
+        Text(buffer, state.PhoneName ?? "小米手机", 206, 192, 134, 21, 2, Muted, true);
+        Box(buffer, 110, 225, 156, 25, 12, Tint, Tint);
+        Text(buffer, PanelStatus.Label(preview, state.Ready, state.ServiceProblem, state.AccountLoggedIn, state.SyncVerified), 110, 225, 156, 25, 2, Blue, true);
+        Text(buffer, "本进程 " + state.Memory.ToString("F1") + " MB", 26, 277, 200, 22, 1, Ink, false);
+        if (state.AccountLoggedIn) Text(buffer, String.IsNullOrEmpty(state.AccountName) ? "已登录" : "已登录：" + state.AccountName, 24, 383, 235, 28, 2, Muted, false);
+        Line(buffer, 24, 378, 352, 378, Border, 1);
     }
     static void DrawButton(IntPtr pointer)
     {

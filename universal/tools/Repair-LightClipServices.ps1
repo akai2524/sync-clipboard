@@ -1,7 +1,8 @@
 ﻿param(
     [switch]$InspectOnly,
     [string]$InstallPath,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$Unattended
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,14 @@ function Test-OfficialComponents([string]$Root) {
     }
 }
 
+function Get-ServiceExecutable([string]$CommandLine) {
+    $path = [Environment]::ExpandEnvironmentVariables($CommandLine)
+    $match = [regex]::Match($path, '^\s*(?:"([^"]+\.exe)"|(.+?\.exe))(?:\s|$)', 'IgnoreCase')
+    if (-not $match.Success) { return '' }
+    if ($match.Groups[1].Success) { return $match.Groups[1].Value }
+    return $match.Groups[2].Value
+}
+
 if ($InspectOnly) {
     if (-not $InstallPath) { throw 'InspectOnly 需要指定 InstallPath。' }
     Test-OfficialComponents ([IO.Path]::GetFullPath($InstallPath))
@@ -35,6 +44,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
         $arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '"'
         if ($InstallPath) { $arguments += ' -InstallPath "' + $InstallPath + '"' }
         if ($NoPause) { $arguments += ' -NoPause' }
+        if ($Unattended) { $arguments += ' -Unattended' }
         $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -PassThru -Wait
         exit $child.ExitCode
     } catch { Write-Host '未获得管理员授权，未更改服务。'; if (-not $NoPause) { Read-Host '按回车关闭' | Out-Null }; exit 1 }
@@ -53,8 +63,10 @@ try {
     }
     $root = [IO.Path]::GetFullPath($InstallPath)
     Test-OfficialComponents $root
-    $reply = [Windows.Forms.MessageBox]::Show('将使用小米官方组件注册缺失的互联后台服务。已存在的同名服务不会覆盖或修改。完成后请重新打开轻剪。', '轻剪通用版服务修复', 'OKCancel', 'Information')
-    if ($reply -ne [Windows.Forms.DialogResult]::OK) { throw '已取消，未更改服务。' }
+    if (-not $Unattended) {
+        $reply = [Windows.Forms.MessageBox]::Show('将使用小米官方组件注册缺失的互联后台服务。其他安装位置的同名服务不会修改；属于本安装目录且未运行的服务会尝试启动。', '轻剪通用版服务修复', 'OKCancel', 'Information')
+        if ($reply -ne [Windows.Forms.DialogResult]::OK) { throw '已取消，未更改服务。' }
+    }
 
     $services = @(
         @{ Name = 'MiPcContinuityService'; Exe = (Join-Path $root 'x86\MiPcContinuityService.exe'); Args = '/service' },
@@ -63,15 +75,17 @@ try {
     foreach ($item in $services) {
         $service = Get-Service -Name $item.Name -ErrorAction SilentlyContinue
         if ($null -ne $service) {
-            Write-Host ($item.Name + ' 已存在，未修改；当前状态：' + $service.Status)
-            if ($service.Status -ne 'Running') { $exitCode = 1 }
+            Write-Host ($item.Name + ' 已存在；当前状态：' + $service.Status)
             $detail = Get-CimInstance -ClassName Win32_Service -Filter ("Name='" + $item.Name + "'") -ErrorAction Stop
-            $path = [Environment]::ExpandEnvironmentVariables($detail.PathName)
-            $match = [regex]::Match($path, '^\s*(?:"([^"]+\.exe)"|(.+?\.exe))(?:\s|$)', 'IgnoreCase')
-            $existingExe = if ($match.Success) { if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value } } else { '' }
+            $existingExe = Get-ServiceExecutable $detail.PathName
             if (-not [String]::Equals($existingExe, $item.Exe, [StringComparison]::OrdinalIgnoreCase)) {
                 Write-Host ($item.Name + ' 指向其他安装位置，为避免影响其他软件，没有修改该服务。')
                 $exitCode = 1
+            } elseif ($service.Status -ne 'Running') {
+                Start-Service -Name $item.Name -ErrorAction Stop
+                $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
+                $service.Refresh()
+                Write-Host ($item.Name + ' 当前状态：' + $service.Status)
             }
             continue
         }
@@ -79,6 +93,10 @@ try {
         $process = Start-Process -FilePath $item.Exe -ArgumentList $item.Args -WorkingDirectory (Split-Path $item.Exe -Parent) -PassThru -Wait -NoNewWindow
         $service = Get-Service -Name $item.Name -ErrorAction SilentlyContinue
         if ($null -eq $service) { throw ($item.Name + ' 注册未成功，官方程序退出码：' + $process.ExitCode) }
+        $detail = Get-CimInstance -ClassName Win32_Service -Filter ("Name='" + $item.Name + "'") -ErrorAction Stop
+        if (-not [String]::Equals((Get-ServiceExecutable $detail.PathName), $item.Exe, [StringComparison]::OrdinalIgnoreCase)) {
+            throw ($item.Name + ' 注册后的路径不是本安装目录，未启动该服务。')
+        }
         if ($service.Status -ne 'Running') {
             Start-Service -Name $item.Name
             $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
