@@ -85,7 +85,9 @@ selected['lightclip.ico'] = ROOT / 'assets/lightclip.ico'
 selected['uninstall.ps1'] = ROOT / 'universal/src/uninstall.ps1'
 selected['卸载测试版.cmd'] = ROOT / 'universal/src/卸载测试版.cmd'
 for name in ('Repair-LightClipServices.ps1', 'repair-services.cmd',
-             'Configure-LightClipFirewall.ps1', 'configure-firewall.cmd', 'remove-firewall.cmd'):
+             'Configure-LightClipFirewall.ps1', 'configure-firewall.cmd', 'remove-firewall.cmd',
+             'configure-auto-firewall.cmd', 'remove-auto-firewall.cmd', 'remove-all-firewall.cmd',
+             'Test-AutomaticFirewall.ps1', 'test-auto-firewall.cmd', 'restore-manual-rules.cmd'):
     selected['tools/' + name] = ROOT / 'universal/tools' / name
 
 # The signed apphost detects self-contained mode from this file. Keep the
@@ -105,6 +107,8 @@ mandatory = ['MiPcContinuity.exe', 'MiPcContinuity.dll', 'MiPcContinuity.deps.js
              'MiSmartShareClrWrapper.dll', 'MiSmartShareDLL.dll', 'dist_clipboard.dll',
              'micont_service.exe', 'x86/MiPcContinuityService.exe', 'FixServiceTool.exe',
              'tools/Repair-LightClipServices.ps1', 'tools/Configure-LightClipFirewall.ps1',
+             'tools/configure-auto-firewall.cmd', 'tools/remove-auto-firewall.cmd', 'tools/remove-all-firewall.cmd',
+             'tools/Test-AutomaticFirewall.ps1', 'tools/test-auto-firewall.cmd', 'tools/restore-manual-rules.cmd',
              'hostfxr.dll', 'hostpolicy.dll', 'coreclr.dll']
 for item in mandatory:
     if item not in selected:

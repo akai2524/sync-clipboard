@@ -1,18 +1,20 @@
 ﻿param(
-    [ValidateSet('Configure','Remove')][string]$Mode = 'Configure',
+    [ValidateSet('Configure','Automatic','Remove','RemoveAutomatic','RemoveAll')][string]$Mode = 'Configure',
     [string]$InstallPath,
     [switch]$InspectOnly,
     [switch]$SelfTest,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$LibraryOnly
 )
 
 $ErrorActionPreference = 'Stop'
 
-function Get-RuleGroup([string]$Root) {
+function Get-RuleGroup([string]$Root, [bool]$Automatic = $false) {
     $bytes = [Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($Root).TrimEnd('\').ToUpperInvariant())
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').Substring(0, 20) }
     finally { $sha.Dispose() }
+    if ($Automatic) { return 'LightClipUniversalAuto-' + $hash }
     return 'LightClipUniversal-' + $hash
 }
 
@@ -44,11 +46,11 @@ function Get-Programs([string]$Root) {
     return $programs
 }
 
-function Get-OwnedRules([string]$Group, [string[]]$Programs) {
+function Get-OwnedRules([string]$Group, [string[]]$Programs, [string]$Description = 'LightClipUniversal phone-specific rule') {
     foreach ($rule in @(Get-NetFirewallRule -Group $Group -ErrorAction SilentlyContinue)) {
         $filters = @($rule | Get-NetFirewallApplicationFilter -ErrorAction Stop)
         if ($rule.Name -notmatch ('^' + [regex]::Escape($Group) + '-[0-9a-f]{32}-[0-5]$') -or
-            $rule.Description -ne 'LightClipUniversal phone-specific rule' -or $filters.Count -ne 1 -or
+            $rule.Description -ne $Description -or $filters.Count -ne 1 -or
             -not ($Programs -contains $filters[0].Program)) {
             throw '发现无法确认归属的同组规则，未修改这些规则。'
         }
@@ -79,6 +81,8 @@ function Install-PhoneRules([string]$Group, [string[]]$Programs, [string]$Phone,
     return $oldClean
 }
 
+if ($LibraryOnly) { return }
+
 if ($SelfTest) {
     if ((Get-PhoneAddress '192.168.31.42') -ne '192.168.31.42') { throw '地址验证失败。' }
     foreach ($bad in @('192.16831.1','8.8.8.8','192.168.31.255')) {
@@ -86,6 +90,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw '非法地址没有被拒绝。' }
     }
     if ((Get-RuleGroup 'D:\Apps\LightClipUniversal') -ne (Get-RuleGroup 'd:\apps\lightclipuniversal\')) { throw '规则分组不一致。' }
+    if ((Get-RuleGroup 'D:\Apps\LightClipUniversal') -eq (Get-RuleGroup 'D:\Apps\LightClipUniversal' $true)) { throw '自动规则与原规则未隔离。' }
     $fakeRules = @{'old' = $true}; $fakeAttempt = [Collections.Generic.List[string]]::new()
     $fakeRemove = { param($name) $fakeRules.Remove($name) | Out-Null }
     $fakeFail = { param($name,$group,$program,$protocol,$phone) if ($fakeAttempt.Count -eq 2) { throw '模拟创建失败' }; $fakeRules[$name] = $true; $fakeAttempt.Add($name) }
@@ -95,6 +100,10 @@ if ($SelfTest) {
     $fakeCreate = { param($name,$group,$program,$protocol,$phone) $fakeRules[$name] = $true }
     $clean = Install-PhoneRules 'test' $programs '192.168.31.42' $old $fakeCreate $fakeRemove
     if (-not $clean -or $fakeRules.Count -ne 6 -or $fakeRules.ContainsKey('old')) { throw '规则替换自检失败。' }
+    $specs = [Collections.Generic.List[object]]::new()
+    $fakeAuto = { param($name,$group,$program,$protocol,$address) $specs.Add([PSCustomObject]@{ Program=$program; Protocol=$protocol; Address=$address }) }
+    $clean = Install-PhoneRules 'automatic-test' $programs 'LocalSubnet4' @() $fakeAuto $fakeRemove
+    if (-not $clean -or $specs.Count -ne 6 -or @($specs | Where-Object { $_.Address -ne 'LocalSubnet4' -or $_.Protocol -notin @('TCP','UDP') -or $_.Program -notin $programs }).Count -ne 0) { throw '自动规则范围自检失败。' }
     Write-Output '地址、规则替换和失败回滚自检通过；未更改防火墙。'
     exit 0
 }
@@ -120,21 +129,50 @@ $exitCode = 0
 try {
     Add-Type -AssemblyName System.Windows.Forms
     if (-not $InstallPath) {
-        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.Description = '请选择轻剪通用版安装目录'
-        $dialog.ShowNewFolderButton = $false
-        if (Test-Path -LiteralPath 'D:\Apps\LightClipUniversal') { $dialog.SelectedPath = 'D:\Apps\LightClipUniversal' }
-        if ($dialog.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { throw '未选择安装目录，未修改防火墙。' }
-        $InstallPath = $dialog.SelectedPath
+        $parent = Split-Path -Parent $PSScriptRoot
+        if (Test-Path -LiteralPath (Join-Path $parent 'MiPcContinuity.dll') -PathType Leaf) { $InstallPath = $parent }
+        if (-not $InstallPath) {
+            $run = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).LightClipUniversal
+            if ($run -match '^"([^"]*\\MiPcContinuity\.exe)"(?:\s|$)') {
+                $candidate = Split-Path -Parent $Matches[1]
+                if (Test-Path -LiteralPath (Join-Path $candidate 'MiPcContinuity.dll') -PathType Leaf) { $InstallPath = $candidate }
+            }
+        }
+        if (-not $InstallPath) {
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = '请选择轻剪通用版安装目录'
+            $dialog.ShowNewFolderButton = $false
+            if (Test-Path -LiteralPath 'D:\Apps\LightClipUniversal') { $dialog.SelectedPath = 'D:\Apps\LightClipUniversal' }
+            if ($dialog.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { throw '未选择安装目录，未修改防火墙。' }
+            $InstallPath = $dialog.SelectedPath
+        }
     }
     $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\')
-    if ($Mode -eq 'Remove') { $programs = @(Get-ProgramPaths $root) }
+    if ($Mode -in @('Remove','RemoveAutomatic','RemoveAll') -and (Test-Path -LiteralPath (Join-Path $root 'data\firewall-test-restore.txt'))) {
+        throw '存在未完成的隔离测试，请先运行 restore-manual-rules.cmd。'
+    }
+    if ($Mode -in @('Remove','RemoveAutomatic','RemoveAll')) { $programs = @(Get-ProgramPaths $root) }
     else { $programs = @(Get-Programs $root) }
-    $group = Get-RuleGroup $root
-    $oldRules = @(Get-OwnedRules $group $programs)
-    if ($Mode -eq 'Remove') {
+    $group = Get-RuleGroup $root ($Mode -in @('Automatic','RemoveAutomatic'))
+    $description = if ($Mode -in @('Automatic','RemoveAutomatic')) { 'LightClipUniversal local subnet rule' } else { 'LightClipUniversal phone-specific rule' }
+    if ($Mode -eq 'RemoveAll') {
+        $oldRules = @(Get-OwnedRules (Get-RuleGroup $root) $programs) + @(Get-OwnedRules (Get-RuleGroup $root $true) $programs 'LightClipUniversal local subnet rule')
+    } else { $oldRules = @(Get-OwnedRules $group $programs $description) }
+    if ($Mode -in @('Remove','RemoveAutomatic','RemoveAll')) {
         foreach ($rule in $oldRules) { Remove-NetFirewallRule -Name $rule.Name -ErrorAction Stop }
         Write-Host ('已移除本安装目录创建的规则：' + $oldRules.Count)
+    } elseif ($Mode -eq 'Automatic') {
+        $aliases = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { -not [String]::IsNullOrWhiteSpace($_.Name) } | ForEach-Object { [Management.Automation.WildcardPattern]::Escape($_.Name) } | Select-Object -Unique)
+        if ($aliases.Count -eq 0) { throw '未找到物理网络适配器；原有规则未改变。' }
+        $message = '自动模式无需输入手机 IP，也无需额外常驻进程。Windows 本地 IPv4 子网内的设备可以通过此电脑现有的物理网卡访问三个小米互联程序；范围比只允许手机 IP 更大，私人和公共网络均生效。是否继续？'
+        if ([Windows.Forms.MessageBox]::Show($message, '轻剪自动网络设置', 'OKCancel', 'Warning') -ne [Windows.Forms.DialogResult]::OK) { throw '已取消，原有规则未改变。' }
+        $create = { param($name,$ruleGroup,$program,$protocol,$address)
+            New-NetFirewallRule -Name $name -Group $ruleGroup -DisplayName '轻剪通用版：本地网络' -Description 'LightClipUniversal local subnet rule' -Direction Inbound -Action Allow -Enabled True -Profile Public,Private -Program $program -Protocol $protocol -RemoteAddress $address -InterfaceAlias $aliases | Out-Null
+        }
+        $remove = { param($name) Remove-NetFirewallRule -Name $name -ErrorAction Stop }
+        $oldClean = Install-PhoneRules $group $programs 'LocalSubnet4' $oldRules $create $remove
+        if (-not $oldClean) { $exitCode = 1; Write-Host '新自动规则已创建，但旧自动规则未能全部清理。' }
+        else { Write-Host '自动网络规则已设置。原先的手机专属规则未改动；请复制截图到手机验证。' }
     } else {
         Write-Host '请在手机当前 Wi-Fi 详情中找到“IP 地址”，不要填写“网关”。'
         $phone = Get-PhoneAddress (Read-Host '输入手机 IPv4 地址')

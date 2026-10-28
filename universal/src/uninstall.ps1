@@ -25,10 +25,10 @@ $taskFirewallClean = $true
 $taskFirewallScript = Join-Path $taskRoot 'tools\Configure-LightClipFirewall.ps1'
 if (Test-Path -LiteralPath $taskFirewallScript -PathType Leaf) {
     try {
-        $taskArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $taskFirewallScript + '" -Mode Remove -InstallPath "' + $taskRoot + '" -NoPause'
+        $taskArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $taskFirewallScript + '" -Mode RemoveAll -InstallPath "' + $taskRoot + '" -NoPause'
         $taskCleanup = Start-Process -FilePath 'powershell.exe' -ArgumentList $taskArguments -Verb RunAs -PassThru -Wait
-        if ($taskCleanup.ExitCode -ne 0) { $taskFirewallClean = $false; Write-Warning '未能确认删除轻剪网络规则，请保留安装目录并运行 tools\remove-firewall.cmd。' }
-    } catch { $taskFirewallClean = $false; Write-Warning '未获得授权清理轻剪网络规则，请保留安装目录并运行 tools\remove-firewall.cmd。' }
+        if ($taskCleanup.ExitCode -ne 0) { $taskFirewallClean = $false; Write-Warning '未能确认删除轻剪网络规则，请保留安装目录并运行 tools\remove-all-firewall.cmd。' }
+    } catch { $taskFirewallClean = $false; Write-Warning '未获得授权清理轻剪网络规则，请保留安装目录并运行 tools\remove-all-firewall.cmd。' }
 }
 if ($taskFirewallClean) { Write-Output '轻剪测试版已退出，自启动项和快捷方式已移除。请关闭此窗口后手动删除以下文件夹：' }
 else { Write-Output '轻剪已退出，自启动项和快捷方式已移除；请保留以下文件夹，先清理网络规则：' }

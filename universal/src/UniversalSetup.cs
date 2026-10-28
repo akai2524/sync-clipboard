@@ -19,7 +19,7 @@ internal static class UniversalSetup
                 MessageBox.Show("这台电脑已有小米电脑管家或现有轻剪。为避免影响它们，请在另一台非小米电脑上测试。", Title, MessageBoxButtons.OK, MessageBoxIcon.Information); return 2;
             }
             if (!Environment.Is64BitOperatingSystem) throw new InvalidOperationException("需要 64 位 Windows 10 或 11。");
-            DialogResult confirm = MessageBox.Show("这是非小米电脑的通用测试版。安装后需要设置小米后台服务和手机专属网络规则，并使用官方入口登录小米账号。\n\n服务和网络设置会请求 Windows 管理员授权。\n\n继续选择安装目录？", Title, MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+            DialogResult confirm = MessageBox.Show("这是非小米电脑的通用测试版。安装后需要设置小米后台服务和自动网络规则，并使用官方入口登录小米账号。\n\n服务和网络设置会请求 Windows 管理员授权。\n\n继续选择安装目录？", Title, MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
             if (confirm != DialogResult.OK) return 0;
             string parent;
             using (FolderBrowserDialog dialog = new FolderBrowserDialog()) {
@@ -55,11 +55,11 @@ internal static class UniversalSetup
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) key.SetValue("LightClipUniversal", "\"" + exe + "\" --autostart");
             bool servicesReady = false, firewallReady = false;
             if (MessageBox.Show("程序文件已安装。现在使用小米官方组件检查并注册缺失的互联服务？\n\n现有同名服务不会被覆盖。", Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                servicesReady = RunTool(target, "Repair-LightClipServices.ps1");
-            if (MessageBox.Show("现在配置手机专属网络规则？\n\n需要输入手机 Wi-Fi 的 IPv4 地址。规则仅允许这个地址访问小米互联程序；如果手机 IP 变化，需要重新设置。", Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                firewallReady = RunTool(target, "Configure-LightClipFirewall.ps1");
+                servicesReady = RunTool(target, "Repair-LightClipServices.ps1", null);
+            if (MessageBox.Show("现在配置自动网络规则？\n\n无需输入手机 IP。Windows 本地 IPv4 子网内的设备可以通过现有物理网卡访问三个小米互联程序，公共和私人网络均生效。", Title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                firewallReady = RunTool(target, "Configure-LightClipFirewall.ps1", "Automatic");
             string status = (servicesReady ? "后台服务检查完成。" : "后台服务尚未确认，请运行安装目录 tools\\repair-services.cmd。") + "\n" +
-                (firewallReady ? "手机专属网络规则已设置。" : "手机专属网络规则尚未确认，请运行安装目录 tools\\configure-firewall.cmd。 ");
+                (firewallReady ? "自动网络规则已设置。" : "自动网络规则尚未确认，请运行安装目录 tools\\configure-auto-firewall.cmd。 ");
             MessageBox.Show("通用测试版已安装到：\n" + target + "\n\n" + status + "\n\n请登录小米账号并测试文字和图片同步。", Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
             Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = target, UseShellExecute = true });
             return 0;
@@ -67,12 +67,13 @@ internal static class UniversalSetup
             MessageBox.Show("安装未完成：" + error.Message, Title, MessageBoxButtons.OK, MessageBoxIcon.Error); return 1;
         }
     }
-    static bool RunTool(string root, string name)
+    static bool RunTool(string root, string name, string mode)
     {
         try {
             string script = Path.Combine(root, "tools", name);
             ProcessStartInfo start = new ProcessStartInfo("powershell.exe");
             start.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -InstallPath \"" + root + "\"";
+            if (!String.IsNullOrEmpty(mode)) start.Arguments += " -Mode " + mode;
             start.WorkingDirectory = root; start.UseShellExecute = true;
             using (Process process = Process.Start(start)) { process.WaitForExit(); return process.ExitCode == 0; }
         } catch (Exception error) {
@@ -85,7 +86,7 @@ internal static class UniversalSetup
         using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip")) {
             if (source == null) return 1;
             using (ZipArchive archive = new ZipArchive(source, ZipArchiveMode.Read)) {
-                foreach (string name in new[] { "MiPcContinuity.exe", "MiPcContinuity.dll", "MiPcContinuity.deps.json", "MiPcContinuity.runtimeconfig.json", "MiSmartShareClrWrapper.dll", "MiSmartShareDLL.dll", "dist_clipboard.dll", "micont_service.exe", "x86/MiPcContinuityService.exe", "tools/Repair-LightClipServices.ps1", "tools/Configure-LightClipFirewall.ps1", "hostfxr.dll", "hostpolicy.dll", "coreclr.dll" })
+                foreach (string name in new[] { "MiPcContinuity.exe", "MiPcContinuity.dll", "MiPcContinuity.deps.json", "MiPcContinuity.runtimeconfig.json", "MiSmartShareClrWrapper.dll", "MiSmartShareDLL.dll", "dist_clipboard.dll", "micont_service.exe", "x86/MiPcContinuityService.exe", "tools/Repair-LightClipServices.ps1", "tools/Configure-LightClipFirewall.ps1", "tools/configure-auto-firewall.cmd", "tools/remove-auto-firewall.cmd", "tools/remove-all-firewall.cmd", "tools/Test-AutomaticFirewall.ps1", "tools/test-auto-firewall.cmd", "tools/restore-manual-rules.cmd", "hostfxr.dll", "hostpolicy.dll", "coreclr.dll" })
                     if (archive.GetEntry(name) == null) return 1;
             }
         }
