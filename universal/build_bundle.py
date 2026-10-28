@@ -84,6 +84,9 @@ selected['MiPcContinuity.dll'] = app
 selected['lightclip.ico'] = ROOT / 'assets/lightclip.ico'
 selected['uninstall.ps1'] = ROOT / 'universal/src/uninstall.ps1'
 selected['卸载测试版.cmd'] = ROOT / 'universal/src/卸载测试版.cmd'
+for name in ('Repair-LightClipServices.ps1', 'repair-services.cmd',
+             'Configure-LightClipFirewall.ps1', 'configure-firewall.cmd', 'remove-firewall.cmd'):
+    selected['tools/' + name] = ROOT / 'universal/tools' / name
 
 # The signed apphost detects self-contained mode from this file. Keep the
 # official .NET 6 runtime manifest while omitting the original GUI's packages.
@@ -100,7 +103,9 @@ selected['MiPcContinuity.deps.json'] = deps_path
 
 mandatory = ['MiPcContinuity.exe', 'MiPcContinuity.dll', 'MiPcContinuity.deps.json', 'MiPcContinuity.runtimeconfig.json',
              'MiSmartShareClrWrapper.dll', 'MiSmartShareDLL.dll', 'dist_clipboard.dll',
-             'micont_service.exe', 'FixServiceTool.exe', 'hostfxr.dll', 'hostpolicy.dll', 'coreclr.dll']
+             'micont_service.exe', 'x86/MiPcContinuityService.exe', 'FixServiceTool.exe',
+             'tools/Repair-LightClipServices.ps1', 'tools/Configure-LightClipFirewall.ps1',
+             'hostfxr.dll', 'hostpolicy.dll', 'coreclr.dll']
 for item in mandatory:
     if item not in selected:
         raise SystemExit('缺少安装组件：' + item)

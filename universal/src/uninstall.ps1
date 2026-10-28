@@ -21,7 +21,17 @@ if (Test-Path -LiteralPath $taskShortcut) {
     $taskLink = (New-Object -ComObject WScript.Shell).CreateShortcut($taskShortcut)
     if ($taskLink.TargetPath -eq $taskExe) { Remove-Item -LiteralPath $taskShortcut }
 }
-Write-Output '轻剪测试版已退出，自启动项和快捷方式已移除。请关闭此窗口后手动删除以下文件夹：'
+$taskFirewallClean = $true
+$taskFirewallScript = Join-Path $taskRoot 'tools\Configure-LightClipFirewall.ps1'
+if (Test-Path -LiteralPath $taskFirewallScript -PathType Leaf) {
+    try {
+        $taskArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $taskFirewallScript + '" -Mode Remove -InstallPath "' + $taskRoot + '" -NoPause'
+        $taskCleanup = Start-Process -FilePath 'powershell.exe' -ArgumentList $taskArguments -Verb RunAs -PassThru -Wait
+        if ($taskCleanup.ExitCode -ne 0) { $taskFirewallClean = $false; Write-Warning '未能确认删除轻剪网络规则，请保留安装目录并运行 tools\remove-firewall.cmd。' }
+    } catch { $taskFirewallClean = $false; Write-Warning '未获得授权清理轻剪网络规则，请保留安装目录并运行 tools\remove-firewall.cmd。' }
+}
+if ($taskFirewallClean) { Write-Output '轻剪测试版已退出，自启动项和快捷方式已移除。请关闭此窗口后手动删除以下文件夹：' }
+else { Write-Output '轻剪已退出，自启动项和快捷方式已移除；请保留以下文件夹，先清理网络规则：' }
 Write-Output $taskRoot
 Write-Output '为避免影响其他软件，小米共享后台服务不会自动卸载。'
 Read-Host '按回车关闭'

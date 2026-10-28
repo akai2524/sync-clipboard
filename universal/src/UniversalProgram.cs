@@ -100,7 +100,11 @@ internal static class Program
             if (getter != null) getter.Invoke(null, null);
         }
         AttachCallbacks();
-        mainType.GetMethod("Init").Invoke(main, new object[] { "clip" });
+        // Match the official host: pass the executable path when there are no
+        // arguments, otherwise pass the joined command-line arguments.
+        string[] args = Environment.GetCommandLineArgs();
+        string initArgs = args.Length > 1 ? String.Join(" ", args, 1, args.Length - 1) : args[0];
+        mainType.GetMethod("Init").Invoke(main, new object[] { initArgs });
         initialized = true; state = "互联库已启动，剪贴板待实测"; Log(state); Tray(1);
         try { MiAccountBusinessCLRWrapper.GetInstance().HandleGetLoginStatus(); }
         catch (Exception e) { Log("读取登录状态失败：" + e.GetType().Name); }
@@ -123,13 +127,23 @@ internal static class Program
     internal static void UpdateDevices(IEnumerable<DeviceInfoWrapper> devices)
     {
         List<PhoneDevice> found = new List<PhoneDevice>();
+        int total = 0, phoneTypes = 0, phoneMissingId = 0;
+        Dictionary<int, int> types = new Dictionary<int, int>();
         if (devices != null) foreach (DeviceInfoWrapper device in devices) {
-            if (device.device_type != CDeviceTypeWrapper.kPhone || String.IsNullOrEmpty(device.idhash)) continue;
+            total++;
+            int type = (int)device.device_type, count;
+            types.TryGetValue(type, out count); types[type] = count + 1;
+            if (device.device_type != CDeviceTypeWrapper.kPhone) continue;
+            phoneTypes++;
+            if (String.IsNullOrEmpty(device.idhash)) { phoneMissingId++; continue; }
             string name = !String.IsNullOrWhiteSpace(device.name) ? device.name : !String.IsNullOrWhiteSpace(device.market_name) ? device.market_name : "小米手机";
             found.Add(new PhoneDevice { Id = device.idhash, Name = name.Replace("&", "&&"), Online = device.is_online });
         }
         lock (deviceLock) phones = found;
         Log("设备列表已更新，手机数量：" + found.Count);
+        List<string> typeCounts = new List<string>();
+        foreach (KeyValuePair<int, int> item in types) typeCounts.Add(item.Key + ":" + item.Value);
+        Log("设备发现诊断：总数=" + total + "；手机类型=" + phoneTypes + "；手机缺少标识=" + phoneMissingId + "；类型计数=" + String.Join(",", typeCounts.ToArray()));
         if (window != IntPtr.Zero) Native.PostMessage(window, 0x8004, IntPtr.Zero, IntPtr.Zero);
     }
     static void Login()

@@ -11,3 +11,5 @@ universal/build/
 *.dll
 *.zip
 *.7z
+__pycache__/
+*.pyc
